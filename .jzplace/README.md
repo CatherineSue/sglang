@@ -17,7 +17,10 @@ conda activate sglang-eagle
 # Install required packages
 pip install --upgrade pip
 pip install sgl-kernel --force-reinstall --no-deps
-pip install -e "python[all]" --find-links https://flashinfer.ai/whl/cu124/torch2.5/flashinfer/
+pip install -e "python[all]" --find-links https://flashinfer.ai/whl/cu124/torch2.4/flashinfer/
+
+# Required by EAGLE in this sglang version. It might lead to issue on H100 (`Value 'sm_90' is not defined for option 'gpu-architecture'`). See the section of "Issue" for a fix below.
+pip install cutex
 
 # Install matplotlib for debugging and data analysis
 pip install matplotlib
