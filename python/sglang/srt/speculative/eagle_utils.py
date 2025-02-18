@@ -187,7 +187,13 @@ class EagleVerifyInput:
         top_scores_index = torch.sort(top_scores_index).values
         draft_tokens = torch.gather(ss_token_list, index=top_scores_index, dim=1)
         draft_tokens = torch.cat((verified_id.unsqueeze(1), draft_tokens), dim=1)
-        parent_list = torch.cat(parents_list[:-1], dim=1)
+
+        # JZ's Note: SGLang has a bug when setting speculative_steps = 1. This is to avoid the bug.
+        if len(parents_list) == 1:
+            parent_list = torch.cat([torch.empty_like(parents_list[0][:0])], dim=1)
+        else:
+            parent_list = torch.cat(parents_list[:-1], dim=1)
+
         tree_mask, position, retrive_index, retrive_cum_len = build_tree_kernel(
             parent_list,
             top_scores_index,

@@ -78,7 +78,8 @@ class ServerArgs:
     stream_output: bool = False
     random_seed: Optional[int] = None
     constrained_json_whitespace_pattern: Optional[str] = None
-    watchdog_timeout: float = 300
+    # JZ's Note: temporary change from 300 to 300000 to avoid timeout during debugging
+    watchdog_timeout: float = 300000
     download_dir: Optional[str] = None
     base_gpu_id: int = 0
 
@@ -125,6 +126,7 @@ class ServerArgs:
     speculative_num_steps: int = 5
     speculative_num_draft_tokens: int = 64
     speculative_eagle_topk: int = 8
+    speculative_eagle_mab: str = ''
 
     # Double Sparsity
     enable_double_sparsity: bool = False
@@ -715,6 +717,12 @@ class ServerArgs:
             help="The number of token sampled from draft model in eagle2 each step.",
             choices=[1, 2, 4, 8],
             default=ServerArgs.speculative_eagle_topk,
+        )
+        parser.add_argument(
+            "--speculative-eagle-mab",
+            type=str,
+            help="The MAB of Speculative Decoding.",
+            default='EG,1_1_1,2_2_4,3_2_4,3_4_8,5_4_8',
         )
 
         # Double Sparsity

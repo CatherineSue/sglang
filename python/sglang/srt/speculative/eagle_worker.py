@@ -24,6 +24,7 @@ from sglang.srt.speculative.eagle_utils import (
     fast_topk,
     select_top_k_tokens,
 )
+from sglang.srt.speculative.eagle_mab import MABGroupManager
 
 logger = logging.getLogger(__name__)
 
@@ -69,13 +70,80 @@ class EAGLEWorker(TpModelWorker):
             FlashInferMultiStepDraftBackend,
         )
 
-        self.draft_attn_backend = FlashInferMultiStepDraftBackend(
-            self.model_runner,
-            self.topk,
-            self.speculative_num_steps,
+        self.default_mab_strategy = self.get_current_mab_strategy()
+        self.speculative_eagle_mab = self.server_args.speculative_eagle_mab.split(',')
+        if self.speculative_eagle_mab:
+            self.mab_algorithm = self.speculative_eagle_mab[0]  # Default to Epsilon-Greedy
+            self.mab_strategies = self.speculative_eagle_mab[1:] + [self.default_mab_strategy]
+            self.mab_strategies = sorted(list(set(self.mab_strategies)))
+        else:
+            self.mab_algorithm = 'EB' # epsilon_greedy
+            self.mab_strategies = [self.default_mab_strategy]
+            self.speculative_eagle_mab = f'{self.mab_algorithm},{self.default_mab_strategy}'
+
+        # Initialize MAB settings
+        self.mab_window_size = getattr(server_args, 'speculative_mab_window_size', 300)
+        self.mab_groups = list(range(1,32)) + list(range(32, 128, 8)) + list(range(128, 256, 32))
+
+        # Initialize MAB manager
+        self.mab_manager = MABGroupManager(
+            name=self.server_args.speculative_eagle_mab,
+            groups=self.mab_groups,
+            strategies=self.mab_strategies,
+            algorithm=self.mab_algorithm,
+            window_size=self.mab_window_size
         )
-        self.model_runner.draft_attn_backend = self.draft_attn_backend
-        self.init_cuda_graphs()
+
+        # Initialize timing events for performance monitoring
+        self.mab_last_pull = {
+            "usage_count": 0,
+            "mab_strategy": None,
+            "batch_size": None,
+            "accept_length_avg": None,
+            "is_decode": False,
+            "events": [torch.cuda.Event(enable_timing=True) for _ in range(5)]
+        }
+
+        self.max_topk = self.topk
+        self.draft_attn_backends = dict()
+        self.cuda_graph_runners = dict()
+        self.target_worker.model_runner.attn_backends = dict()
+        self.target_worker.model_runner.cuda_graph_runners = dict()
+
+        # Initialize cuda graph runners for each MAB strategy
+        self.target_worker.model_runner.attn_backends[self.default_mab_strategy] = self.target_worker.model_runner.attn_backend
+        self.target_worker.model_runner.cuda_graph_runners[self.default_mab_strategy] = self.target_worker.model_runner.cuda_graph_runner
+        self.last_mab_strategy = self.default_mab_strategy
+
+        for mab_strategy in self.mab_strategies:
+            self.set_mab_strategy(mab_strategy)
+
+            # Draft worker
+            self.max_topk = max(self.max_topk, self.topk)
+            self.draft_attn_backend = FlashInferMultiStepDraftBackend(
+                self.model_runner,
+                self.topk,
+                self.speculative_num_steps,
+            )
+            self.model_runner.draft_attn_backend = self.draft_attn_backend
+            self.init_cuda_graphs()
+
+            self.draft_attn_backends[mab_strategy] = self.draft_attn_backend
+            self.cuda_graph_runners[mab_strategy] = self.cuda_graph_runner
+
+            # Target worker
+            if mab_strategy == self.default_mab_strategy:
+                pass
+            else:
+                # repeat the same process for the target worker
+                self.target_worker.model_runner.init_attention_backend()
+                self.target_worker.model_runner.init_cuda_graphs()
+
+                self.target_worker.model_runner.attn_backends[mab_strategy] = self.target_worker.model_runner.attn_backend
+                self.target_worker.model_runner.cuda_graph_runners[mab_strategy] = self.target_worker.model_runner.cuda_graph_runner
+
+        # Set default MAB strategy
+        self.set_mab_strategy(self.default_mab_strategy)
 
     def init_cuda_graphs(self):
         """Capture cuda graphs."""
@@ -89,12 +157,122 @@ class EAGLEWorker(TpModelWorker):
         self.cuda_graph_runner = EAGLEDraftCudaGraphRunner(self)
         logger.info(f"Capture cuda graph end. Time elapsed: {time.time() - tic:.2f} s")
 
+    def get_current_mab_strategy(self) -> str:
+        """Get MAB strategy string from current speculative decoding settings."""
+        mab_strategy = f"{self.server_args.speculative_num_steps}_{self.server_args.speculative_eagle_topk}_{self.server_args.speculative_num_draft_tokens}"
+        return mab_strategy
+
+    def set_mab_strategy(self, mab_strategy: str):
+        """Apply MAB strategy by updating speculative decoding settings.
+        
+        Args:
+            mab_strategy: String in format 'steps_topk_tokens'
+        """
+        if len(self.mab_strategies) == 1:
+            return
+        if mab_strategy == self.last_mab_strategy:
+            return
+
+        self.last_mab_strategy = mab_strategy
+
+        eager_setting = mab_strategy.split("_")
+
+        # Update the setting for the draft worker
+        self.server_args.speculative_num_steps = int(eager_setting[0])
+        self.server_args.speculative_eagle_topk = int(eager_setting[1])
+        self.server_args.speculative_num_draft_tokens = int(eager_setting[2])
+
+        # Draft worker
+        self.topk = self.server_args.speculative_eagle_topk
+        self.speculative_num_steps = self.server_args.speculative_num_steps
+
+        # Update the setting for the draft worker's cuda graph runner
+        self.cuda_graph_runner = self.cuda_graph_runners.get(mab_strategy, None)
+        self.draft_attn_backend = self.draft_attn_backends.get(mab_strategy, None)
+        self.model_runner.draft_attn_backend = self.draft_attn_backend
+
+        # Target worker
+        if self.target_worker.model_runner.cuda_graph_runner:
+            self.target_worker.model_runner.server_args.speculative_num_steps = self.server_args.speculative_num_steps
+            self.target_worker.model_runner.server_args.speculative_eagle_topk = self.server_args.speculative_eagle_topk
+            self.target_worker.model_runner.server_args.speculative_num_draft_tokens = self.server_args.speculative_num_draft_tokens
+
+            self.target_worker.model_runner.attn_backend = self.target_worker.model_runner.attn_backends.get(mab_strategy, None)
+            self.target_worker.model_runner.cuda_graph_runner = self.target_worker.model_runner.cuda_graph_runners.get(mab_strategy, None)
+
+
+    def select_mab_strategy(self, batch: ScheduleBatch) -> str:
+        """Select and apply MAB strategy for the given batch.
+        
+        Args:
+            batch: Batch of requests to process
+            
+        Returns:
+            Selected MAB strategy string
+        """
+        bs = len(batch.reqs)
+        mab_strategy = self.mab_manager.select_strategy(bs)
+        self.set_mab_strategy(mab_strategy)
+        return mab_strategy
+
+    def record_mab_strategy_metrics(self, mab_last_pull):
+        torch.cuda.synchronize()
+        events = mab_last_pull["events"]
+
+        elapsed_seconds = [0] * (len(events) - 1)
+        for i in range(len(events)-1):
+            elapsed_seconds[i] = events[i].elapsed_time(events[i+1]) / 1000.0
+
+        mab_strategy = mab_last_pull["mab_strategy"]
+        accept_length_avg = mab_last_pull["accept_length_avg"]
+        bs = mab_last_pull["batch_size"]
+
+        if len(self.mab_strategies) > 1:
+            start = time.perf_counter()
+            stable_accept_length = self.mab_manager.get_stable_accept_length(mab_strategy)
+            mab_time = time.perf_counter() - start
+        else:
+            stable_accept_length = accept_length_avg
+            mab_time = 0.0
+        
+        # Calculate metrics
+        metrics = {
+            "reward": stable_accept_length * bs / sum(elapsed_seconds),
+            "goodput": accept_length_avg * bs / sum(elapsed_seconds),
+            "accept_length": accept_length_avg,
+            "total_time": sum(elapsed_seconds),
+            "draft_time": elapsed_seconds[0],
+            "verify_time": elapsed_seconds[1],
+            "draft_extend_time": elapsed_seconds[2],
+            "other_time": elapsed_seconds[3],
+            "mab_time": mab_time,
+        }
+        
+        # Update metrics in MAB manager
+        self.mab_manager.record_metrics(bs, mab_strategy, metrics)
+
     def forward_batch_speculative_generation(self, batch: ScheduleBatch):
+        events = self.mab_last_pull["events"]
+        if self.mab_last_pull["is_decode"]:
+            # Speculative Decoding does support overlap-schedule yet. This is to measure the 
+            # overhead due to non-overlapped scheduler time since last decoding step
+            events[4].record()
+            self.record_mab_strategy_metrics(self.mab_last_pull)
+
+        self.mab_last_pull["is_decode"] = False
         if batch.forward_mode.is_decode():
+            self.mab_last_pull["is_decode"] = True
+
+            self.mab_last_pull["mab_strategy"] = self.select_mab_strategy(batch)
+            batch.spec_info.topk_p = batch.spec_info.topk_p[:, :self.topk]
+            batch.spec_info.topk_index = batch.spec_info.topk_index[:, :self.topk]
+
             # Draft
+            events[0].record()
             spec_info: EagleVerifyInput = self.draft(batch)
 
             # Verify
+            events[1].record()
             (
                 next_draft_input,
                 logits_output,
@@ -104,9 +282,16 @@ class EAGLEWorker(TpModelWorker):
                 model_worker_batch,
             ) = self.verify(batch, spec_info)
             batch.spec_info = next_draft_input
+
             # if it is None, means all requsets are finished
+            events[2].record()
             if batch.spec_info.verified_id is not None:
                 self.forward_draft_extend_after_decode(batch)
+
+            events[3].record()
+            self.mab_last_pull["accept_length_avg"] = sum(accept_length_cpu) / len(batch.reqs) + 1
+            self.mab_last_pull["batch_size"] = len(batch.reqs)
+
             return (
                 logits_output,
                 verified_id,
@@ -175,6 +360,22 @@ class EAGLEWorker(TpModelWorker):
             # Run forward steps
             score_list, token_list, parents_list = self.draft_forward(forward_batch)
 
+        # SGlang has a bug here: The model might output nan in score_list after a certain 
+        # speculative_num_steps for some reqs in the batch. 
+        # Ever observed one case where 3 out of 145 reqs have nan in their score_list 
+        # when speculative_num_steps = 4. 
+        for i in range(self.speculative_num_steps):
+            isnan_tokens = torch.isnan(score_list[i])
+            if torch.any(isnan_tokens):
+                # Identify the reqs that include nan values
+                isnan_reqs = isnan_tokens.view(num_seqs, -1).max(dim=1).values
+
+                # Set to equal probability among child tokens, so that the chain rule is not violate
+                min_score = 1 if i == 0 else score_list[i-1][isnan_reqs].min()
+                for j in range(i, self.speculative_num_steps):
+                    score_list[j][isnan_reqs] = min_score / self.topk
+                    min_score = min_score / self.topk
+
         ret = EagleVerifyInput.create(
             spec_info.verified_id,
             score_list,
@@ -216,6 +417,10 @@ class EAGLEWorker(TpModelWorker):
             score_list.append(tree_info[0])
             token_list.append(tree_info[1])
             parents_list.append(tree_info[2])
+
+            # This is copied from a later sglang PR
+            if i == self.speculative_num_steps - 1:
+                break
 
             # Set inputs
             forward_batch.input_ids = input_ids
@@ -290,7 +495,8 @@ class EAGLEWorker(TpModelWorker):
     ):
         probs = torch.softmax(logits_output.next_token_logits, dim=-1)
         spec_info = forward_batch.spec_info
-        spec_info.topk_p, spec_info.topk_index = fast_topk(probs, self.topk, dim=-1)
+        # Change from self.topk to self.max_topk, so that it can support MAB with different topk values
+        spec_info.topk_p, spec_info.topk_index = fast_topk(probs, self.max_topk, dim=-1)
         spec_info.hidden_states = logits_output.hidden_states
 
     # Don't support prefix share now.

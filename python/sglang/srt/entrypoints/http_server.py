@@ -581,7 +581,8 @@ def _wait_and_warmup(server_args, pipe_finish_writer, image_token_text):
                 url + request_name,
                 json=json_data,
                 headers=headers,
-                timeout=600,
+                # JZ's Note: temporary change from 600 to a large number to avoid timeout during debugging
+                timeout=600000,
             )
             assert res.status_code == 200, f"{res}"
     except Exception:

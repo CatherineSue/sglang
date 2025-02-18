@@ -947,7 +947,8 @@ class FlashInferMultiStepDraftBackend:
             triton.next_power_of_2(self.speculative_num_steps),
             triton.next_power_of_2(bs),
         )
-        for i in range(self.speculative_num_steps):
+        # JZ's Note: Copied from a later PR from SGLang to remove unncessary calculations
+        for i in range(self.speculative_num_steps - 1):
             forward_batch.spec_info.kv_indptr = self.kv_indptr[i, : bs + 1]
             forward_batch.spec_info.kv_indices = self.cuda_graph_kv_indices[i][
                 : seq_lens_sum * self.topk + bs * (i + 1)
