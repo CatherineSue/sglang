@@ -60,9 +60,17 @@ class EagleDraftInput:
 
             pt += req.extend_input_len
 
-        # TODO: support batching inputs
-        assert len(batch.extend_lens) == 1
-        batch.input_ids = torch.concat((batch.input_ids[1:], self.verified_id))
+        # JZ Notes: support batching inputs
+        if len(batch.extend_lens) == 1:
+            batch.input_ids = torch.concat((batch.input_ids[1:], self.verified_id))
+        else:
+            chunks = torch.split(batch.input_ids, batch.extend_lens)
+            processed_chunks = []
+            for i in range(len(chunks)):
+                # Remove first token and append verified_id for this request
+                processed_chunk = torch.cat([chunks[i][1:], self.verified_id[i].unsqueeze(0)])
+                processed_chunks.append(processed_chunk)
+            batch.input_ids = torch.cat(processed_chunks)
 
     def prepare_extend_after_decode(self, batch: ScheduleBatch, speculative_num_steps):
         batch.out_cache_loc = batch.alloc_token_slots(self.verified_id.numel())

@@ -83,12 +83,10 @@ class EAGLEWorker(TpModelWorker):
 
         # Initialize MAB settings
         self.mab_window_size = getattr(server_args, 'speculative_mab_window_size', 300)
-        self.mab_groups = list(range(1,32)) + list(range(32, 128, 8)) + list(range(128, 256, 32))
 
         # Initialize MAB manager
         self.mab_manager = MABGroupManager(
             name=self.server_args.speculative_eagle_mab,
-            groups=self.mab_groups,
             strategies=self.mab_strategies,
             algorithm=self.mab_algorithm,
             window_size=self.mab_window_size

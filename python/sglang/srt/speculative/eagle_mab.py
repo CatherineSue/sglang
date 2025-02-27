@@ -7,6 +7,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 from pathlib import Path
 from typing import Dict, List, Optional, Union, Deque
+import os
 
 @dataclass
 class MABStrategyMetrics:
@@ -189,16 +190,21 @@ class MABGroupManager:
     Each group (e.g., batch size group) has its own MAB instance that learns
     independently which strategies work best for that group.
     """
-    def __init__(self, name: str, groups: List[int], strategies: List[str], 
+    def __init__(self, name: str, strategies: List[str], 
                  algorithm: str = "EG", window_size: int = 1000,
                  output_dir = "mab_plots"):
         self.name = name
-        self.groups = sorted(groups)
         self.strategies = strategies
         self.algorithm = algorithm.upper()
         self.window_size = window_size
-        self.output_dir = output_dir
-        
+
+        # get 'MAB_RESULTS_DIR' from environment variable
+        self.output_dir = Path(os.getenv('MAB_RESULTS_DIR', '.')) / output_dir
+        print(f"SGLang MAB Results will be saved to: {self.output_dir} for {self.strategies}")
+
+        # Initialize groups
+        self.groups = list(range(1,32)) + list(range(32, 128, 8)) + list(range(128, 256, 32))
+
         # Initialize MAB instances
         self.mabs: Dict[int, BaseMAB] = {}
         self._init_mabs()
@@ -274,7 +280,7 @@ class MABGroupManager:
         self.mabs[group].record_metrics(strategy, metrics)
 
         self.global_step += 1
-        if self.global_step % 30_000 == 0:
+        if self.global_step % 30_000 == 0 or self.global_step == 1000:
             self.plot_mab_metrics()
             self.plot_accept_length_stats()
     

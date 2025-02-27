@@ -73,7 +73,7 @@ python3 -m sglang.bench_serving \
 
 # With backend=sglang, draft and target models have less change to have consistent predictions
 python3 -m sglang.bench_serving \
-    --backend sglang \
+    --backend sglang-oai \
     --dataset-name sharegpt \
     --num-prompts 100 --max-concurrency 256  \
     --request-rate-range 1,4,16,64,256 --multi \

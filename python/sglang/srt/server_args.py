@@ -260,7 +260,6 @@ class ServerArgs:
 
         # Speculative Decoding
         if self.speculative_algorithm == "EAGLE":
-            self.prefill_only_one_req = True
             self.disable_cuda_graph_padding = True
             self.disable_radix_cache = True
             self.disable_overlap_schedule = True
