@@ -24,7 +24,7 @@ from sglang.srt.speculative.eagle_utils import (
     fast_topk,
     select_top_k_tokens,
 )
-from sglang.srt.speculative.eagle_mab import MABGroupManager
+from sglang.srt.speculative.eagle_mab import MABGroupManager, MetricsEntry
 
 logger = logging.getLogger(__name__)
 
@@ -83,10 +83,11 @@ class EAGLEWorker(TpModelWorker):
 
         # Initialize MAB settings
         self.mab_window_size = getattr(server_args, 'speculative_mab_window_size', 300)
+        self.groups = list(range(1,32)) + list(range(32, 128, 8)) + list(range(128, 257, 32))
 
         # Initialize MAB manager
         self.mab_manager = MABGroupManager(
-            name=self.server_args.speculative_eagle_mab,
+            groups=self.mab_groups,
             strategies=self.mab_strategies,
             algorithm=self.mab_algorithm,
             window_size=self.mab_window_size
@@ -173,16 +174,12 @@ class EAGLEWorker(TpModelWorker):
 
         self.last_mab_strategy = mab_strategy
 
-        eager_setting = mab_strategy.split("_")
+        steps, topk, draft_tokens = map(int, mab_strategy.split("_"))
 
         # Update the setting for the draft worker
-        self.server_args.speculative_num_steps = int(eager_setting[0])
-        self.server_args.speculative_eagle_topk = int(eager_setting[1])
-        self.server_args.speculative_num_draft_tokens = int(eager_setting[2])
-
-        # Draft worker
-        self.topk = self.server_args.speculative_eagle_topk
-        self.speculative_num_steps = self.server_args.speculative_num_steps
+        self.speculative_num_steps = self.server_args.speculative_num_steps = steps
+        self.topk = self.server_args.speculative_eagle_topk = topk
+        self.server_args.speculative_num_draft_tokens = draft_tokens
 
         # Update the setting for the draft worker's cuda graph runner
         self.cuda_graph_runner = self.cuda_graph_runners.get(mab_strategy, None)
@@ -234,20 +231,21 @@ class EAGLEWorker(TpModelWorker):
             mab_time = 0.0
         
         # Calculate metrics
-        metrics = {
-            "reward": stable_accept_length * bs / sum(elapsed_seconds),
-            "goodput": accept_length_avg * bs / sum(elapsed_seconds),
-            "accept_length": accept_length_avg,
-            "total_time": sum(elapsed_seconds),
-            "draft_time": elapsed_seconds[0],
-            "verify_time": elapsed_seconds[1],
-            "draft_extend_time": elapsed_seconds[2],
-            "other_time": elapsed_seconds[3],
-            "mab_time": mab_time,
-        }
+        total_time = sum(elapsed_seconds)
+        metrics_entry = MetricsEntry(
+            reward=stable_accept_length * bs / total_time,
+            goodput=accept_length_avg * bs / total_time,
+            accept_length=accept_length_avg,
+            total_time=total_time,
+            draft_time=elapsed_seconds[0],
+            verify_time=elapsed_seconds[1],
+            draft_extend_time=elapsed_seconds[2],
+            other_time=elapsed_seconds[3],
+        )
+        metrics_entry.additional_metrics["mab_time"] = mab_time
         
         # Update metrics in MAB manager
-        self.mab_manager.record_metrics(bs, mab_strategy, metrics)
+        self.mab_manager.add_single_step_metrics(bs, mab_strategy, metrics_entry)
 
     def forward_batch_speculative_generation(self, batch: ScheduleBatch):
         events = self.mab_last_pull["events"]

@@ -100,7 +100,7 @@ The following script compares various MAB settings:
 
 ```bash
 # To test different concurrencies
-python .jzplace/eagle_testing.py --traffic-rate-option=concurrency
+python3 .jzplace/eagle_testing.py --traffic-rate-option=concurrency
 
 # To test different qps
 python .jzplace/eagle_testing.py --traffic-rate-option=qps

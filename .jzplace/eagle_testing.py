@@ -222,7 +222,7 @@ def plot_results(EXPERIMENTS, results_dir):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--port', type=int, default=30023)
+    parser.add_argument('--port', type=int, default=8082)
     parser.add_argument('--results-dir', type=str, default='mab_results')
     parser.add_argument('--num-prompts', type=int, default=1000)
     parser.add_argument('--traffic-rate-option', type=str, default='concurrency', choices=['qps', 'concurrency'])
