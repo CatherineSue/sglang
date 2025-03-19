@@ -126,7 +126,7 @@ class ServerArgs:
     speculative_num_steps: int = 5
     speculative_num_draft_tokens: int = 64
     speculative_eagle_topk: int = 8
-    speculative_eagle_mab: str = ''
+    speculative_eagle_mab: str = ""
 
     # Double Sparsity
     enable_double_sparsity: bool = False
@@ -721,7 +721,7 @@ class ServerArgs:
             "--speculative-eagle-mab",
             type=str,
             help="The MAB of Speculative Decoding.",
-            default='EG,1_1_1,2_2_4,3_2_4,3_4_8,5_4_8',
+            default="EG,1_1_1,2_2_4,3_2_4,3_4_8,5_4_8",
         )
 
         # Double Sparsity

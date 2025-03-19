@@ -1,15 +1,15 @@
 """Multi-Armed Bandit implementation for adaptive speculative decoding."""
 
 import math
+import os
 from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Deque, Dict, List, Optional, Union
+from typing import Deque, Dict, List, Optional
 
 import matplotlib.pyplot as plt
 import numpy as np
 
-import os
 
 @dataclass
 class MetricsEntry:
@@ -282,6 +282,7 @@ class MABGroupManager:
     Each group (e.g., batch size group) has its own MAB instance that learns
     independently which strategies work best for that group.
     """
+
     # Map algorithm names to their factory functions
     ALGORITHM_FACTORIES = {
         "EG": lambda strategies, window_size: EpsilonGreedyMAB(
@@ -303,7 +304,7 @@ class MABGroupManager:
         self.groups = sorted(groups)
 
         # get 'MAB_RESULTS_DIR' from environment variable
-        self.output_dir = Path(os.getenv('MAB_RESULTS_DIR', '.')) / output_dir
+        self.output_dir = Path(os.getenv("MAB_RESULTS_DIR", ".")) / output_dir
         self.strategies = strategies
 
         # Validate algorithm type
@@ -456,7 +457,12 @@ class MABGroupManager:
             stable_accept_lengths[strategy] = self.get_stable_accept_length(strategy)
         pulls = {}
         for group in self.groups:
-            pulls[group] = sum([len(self.mabs[group].strategy_metrics[strategy].steps) for strategy in self.strategies])
+            pulls[group] = sum(
+                [
+                    len(self.mabs[group].strategy_metrics[strategy].steps)
+                    for strategy in self.strategies
+                ]
+            )
 
         # Calculate statistics for each group and strategy
         for group in self.groups:
@@ -504,7 +510,11 @@ class MABGroupManager:
         return stats
 
     def _compute_per_strategy_stats(
-        self, metrics_obj, strategy_name, pulls_group, stable_accept_lengths
+        self,
+        metrics_obj: MABMetricsManager,
+        strategy_name: str,
+        pulls_group,
+        stable_accept_lengths,
     ):
         """Compute all necessary stats for a given strategy within a group."""
         stats_per_strategy = {

@@ -9,7 +9,7 @@ cd sglang
 # Checkout the commit after EAGLE2 refactoring (Feb 3)
 # Later commits introduced bugs (illegal CUDA memory access) when request concurrency is high.
 # Reference: https://github.com/sgl-project/sglang/commits/main/python/sglang/srt/speculative/eagle_worker.py
-git checkout 013021b 
+git checkout 013021b
 
 conda create -n sglang-eagle python=3.12 -y
 conda activate sglang-eagle
@@ -114,7 +114,7 @@ The experiments test different configurations:
 
 ```python
 EXPERIMENTS = [
-    # MAB to adaptively choose among different speculative decoding settings 
+    # MAB to adaptively choose among different speculative decoding settings
     "EG,2_2_4,3_4_8,5_8_16",
     "EG,1_2_2,3_2_4,3_4_8,5_8_16",
     "UCB1,2_2_4,3_4_8,5_8_16",

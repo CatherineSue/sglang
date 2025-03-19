@@ -1,6 +1,7 @@
-import time
-import requests
 import statistics  # for computing mean and standard deviation
+import time
+
+import requests
 
 # This is to test the impact of 1) applying chat template ([INST] and [/INST]) in case of Llama3.1-8B models; 2) different types of data (speculative decoding is best at fact checking /coding data)
 # The draft model is finetuned with chat template. When it is applied, the draft and target model will predict more consistent results
@@ -35,7 +36,7 @@ for temperature in [0, 2]:
                 # print(f"Starting iteration {i+1}")
 
                 tic = time.time()
-                
+
                 response = requests.post(
                     f"http://localhost:{port}/generate",
                     json={
@@ -47,21 +48,27 @@ for temperature in [0, 2]:
                         },
                     },
                 )
-                
+
                 latency = time.time() - tic
                 ret = response.json()
-                
+
                 # Print the complete response text
                 # print(ret["text"])
-                
+
                 # Calculate and print the speed for this iteration
                 speed = ret["meta_info"]["completion_tokens"] / latency
                 # print(f"Iteration {i+1} speed: {speed:.2f} token/s")
-                
+
                 speeds.append(speed)
 
             # Compute and print average and standard deviation of speed across iterations
-            avg_speed[f"{prompt_type},{port_type},{temperature}"] = statistics.mean(speeds)
-            std_speed[f"{prompt_type},{port_type},{temperature}"] = statistics.stdev(speeds)
+            avg_speed[f"{prompt_type},{port_type},{temperature}"] = statistics.mean(
+                speeds
+            )
+            std_speed[f"{prompt_type},{port_type},{temperature}"] = statistics.stdev(
+                speeds
+            )
 
-            print(f"{prompt_type} with {port_type}: {statistics.mean(speeds):.2f} +/- {statistics.stdev(speeds):.2f} token/s")
+            print(
+                f"{prompt_type} with {port_type}: {statistics.mean(speeds):.2f} +/- {statistics.stdev(speeds):.2f} token/s"
+            )

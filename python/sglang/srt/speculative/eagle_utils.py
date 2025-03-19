@@ -68,7 +68,9 @@ class EagleDraftInput:
             processed_chunks = []
             for i in range(len(chunks)):
                 # Remove first token and append verified_id for this request
-                processed_chunk = torch.cat([chunks[i][1:], self.verified_id[i].unsqueeze(0)])
+                processed_chunk = torch.cat(
+                    [chunks[i][1:], self.verified_id[i].unsqueeze(0)]
+                )
                 processed_chunks.append(processed_chunk)
             batch.input_ids = torch.cat(processed_chunks)
 
