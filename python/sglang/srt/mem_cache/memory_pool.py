@@ -212,11 +212,13 @@ class MHATokenToKVPool(KVCache):
         layer_num: int,
         device: str,
         enable_memory_saver: bool,
+        model_config=None,
     ):
         self.size = size
         self.page_size = page_size
         self.dtype = dtype
         self.device = device
+        self.model_config = model_config
         if dtype in (torch.float8_e5m2, torch.float8_e4m3fn):
             # NOTE: Store as torch.uint8 because Tensor.index_put is not implemented for torch.float8_e5m2
             self.store_dtype = torch.uint8
@@ -245,22 +247,31 @@ class MHATokenToKVPool(KVCache):
         with self.memory_saver_adapter.region():
             # [size, head_num, head_dim] for each layer
             # The padded slot 0 is used for writing dummy outputs from padded tokens.
-            self.k_buffer = [
-                torch.zeros(
-                    (self.size + self.page_size, self.head_num, self.head_dim),
-                    dtype=self.store_dtype,
-                    device=self.device,
+            self.k_buffer = []
+            self.v_buffer = []
+
+            for layer_id in range(self.layer_num):
+                # Determine the appropriate size for this layer
+                layer_size = (
+                    self.model_config.get_layer_kv_cache_size(layer_id, self.size)
+                    if self.model_config
+                    else self.size
                 )
-                for _ in range(self.layer_num)
-            ]
-            self.v_buffer = [
-                torch.zeros(
-                    (self.size + self.page_size, self.head_num, self.head_dim),
-                    dtype=self.store_dtype,
-                    device=self.device,
+
+                self.k_buffer.append(
+                    torch.zeros(
+                        (layer_size + self.page_size, self.head_num, self.head_dim),
+                        dtype=self.store_dtype,
+                        device=self.device,
+                    )
                 )
-                for _ in range(self.layer_num)
-            ]
+                self.v_buffer.append(
+                    torch.zeros(
+                        (layer_size + self.page_size, self.head_num, self.head_dim),
+                        dtype=self.store_dtype,
+                        device=self.device,
+                    )
+                )
 
     def _clear_buffers(self):
         del self.k_buffer
@@ -416,6 +427,7 @@ class MLATokenToKVPool(KVCache):
         layer_num: int,
         device: str,
         enable_memory_saver: bool,
+        model_config=None,
     ):
         self.size = size
         self.page_size = page_size
@@ -436,14 +448,22 @@ class MLATokenToKVPool(KVCache):
 
         with memory_saver_adapter.region():
             # The padded slot 0 is used for writing dummy outputs from padded tokens.
-            self.kv_buffer = [
-                torch.zeros(
-                    (size + page_size, 1, kv_lora_rank + qk_rope_head_dim),
-                    dtype=self.store_dtype,
-                    device=device,
+            self.kv_buffer = []
+            for layer_id in range(layer_num):
+                # Determine the appropriate size for this layer
+                layer_size = (
+                    model_config.get_layer_kv_cache_size(layer_id, size)
+                    if model_config
+                    else size
                 )
-                for _ in range(layer_num)
-            ]
+
+                self.kv_buffer.append(
+                    torch.zeros(
+                        (layer_size + page_size, 1, kv_lora_rank + qk_rope_head_dim),
+                        dtype=self.store_dtype,
+                        device=device,
+                    )
+                )
 
         self.layer_transfer_counter = None
         self.page_size = page_size
@@ -533,6 +553,7 @@ class DoubleSparseTokenToKVPool(KVCache):
         device: str,
         heavy_channel_num: int,
         enable_memory_saver: bool,
+        model_config=None,
     ):
         self.size = size
         self.page_size = page_size
@@ -549,26 +570,41 @@ class DoubleSparseTokenToKVPool(KVCache):
 
         with memory_saver_adapter.region():
             # [size, head_num, head_dim] for each layer
-            self.k_buffer = [
-                torch.zeros(
-                    (size + page_size, head_num, head_dim), dtype=dtype, device=device
-                )
-                for _ in range(layer_num)
-            ]
-            self.v_buffer = [
-                torch.zeros(
-                    (size + page_size, head_num, head_dim), dtype=dtype, device=device
-                )
-                for _ in range(layer_num)
-            ]
+            self.k_buffer = []
+            self.v_buffer = []
+            self.label_buffer = []
 
-            # [size, head_num, heavy_channel_num] for each layer
-            self.label_buffer = [
-                torch.zeros(
-                    (size + 1, head_num, heavy_channel_num), dtype=dtype, device=device
+            for layer_id in range(layer_num):
+                # Determine the appropriate size for this layer
+                layer_size = (
+                    model_config.get_layer_kv_cache_size(layer_id, size)
+                    if model_config
+                    else size
                 )
-                for _ in range(layer_num)
-            ]
+
+                self.k_buffer.append(
+                    torch.zeros(
+                        (layer_size + page_size, head_num, head_dim),
+                        dtype=self.store_dtype,
+                        device=device,
+                    )
+                )
+                self.v_buffer.append(
+                    torch.zeros(
+                        (layer_size + page_size, head_num, head_dim),
+                        dtype=self.store_dtype,
+                        device=device,
+                    )
+                )
+
+                # [size, head_num, heavy_channel_num] for each layer
+                self.label_buffer.append(
+                    torch.zeros(
+                        (layer_size + 1, head_num, heavy_channel_num),
+                        dtype=self.store_dtype,
+                        device=device,
+                    )
+                )
 
     def get_key_buffer(self, layer_id: int):
         return self.k_buffer[layer_id]

@@ -253,6 +253,22 @@ class ModelConfig:
         # parallel size so each GPU has at least one KV head.
         return max(1, total_num_kv_heads // tensor_parallel_size)
 
+    def get_layer_kv_cache_size(self, layer_id: int, default_size: int) -> int:
+        """Get the KV cache size for a specific layer."""
+        # Llama 4: only layers at indices divisible by 4 need full attention
+        if is_llama4_model(self.hf_config.architectures):
+            return min(default_size, 8192) if layer_id % 4 != 0 else default_size
+
+        # For other models, use full attention for all layers
+        return default_size
+
+    def has_mixed_attention_patterns(self) -> bool:
+        """
+        Check if this model has mixed attention patterns (some layers need full attention, others don't).
+        """
+        # Currently only Llama 4 has mixed attention patterns
+        return is_llama4_model(self.hf_config.architectures)
+
     # adapted from https://github.com/vllm-project/vllm/blob/v0.6.4.post1/vllm/config.py
     def _parse_quant_hf_config(self):
         quant_cfg = getattr(self.hf_config, "quantization_config", None)
@@ -372,10 +388,6 @@ class ModelConfig:
         """
         Pull the model config files to a temporary
         directory in case of remote.
-
-        Args:
-            model: The model name or path.
-
         """
         from sglang.srt.connector import create_remote_connector
         from sglang.srt.utils import is_remote_url
@@ -549,6 +561,10 @@ def is_audio_model(model_architectures: List[str]):
 
 def is_encoder_decoder_model(model_architectures: List[str]):
     return "MllamaForConditionalGeneration" in model_architectures
+
+
+def is_llama4_model(model_architectures: List[str]):
+    return "Llama4ForConditionalGeneration" in model_architectures
 
 
 def yarn_get_mscale(scale: float = 1, mscale: float = 1) -> float:

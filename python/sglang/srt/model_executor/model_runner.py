@@ -704,13 +704,42 @@ class ModelRunner:
                 * torch._utils._element_size(self.kv_cache_dtype)
             )
         else:
-            cell_size = (
-                self.model_config.get_num_kv_heads(get_attention_tp_size())
-                * self.model_config.head_dim
-                * self.model_config.num_hidden_layers
-                * 2
-                * torch._utils._element_size(self.kv_cache_dtype)
-            )
+            # For models with mixed attention patterns (like Llama 4)
+            if self.model_config.has_mixed_attention_patterns():
+                # Calculate base memory per layer
+                base_layer_size = (
+                    self.model_config.get_num_kv_heads(get_attention_tp_size())
+                    * self.model_config.head_dim
+                    * 2
+                    * torch._utils._element_size(self.kv_cache_dtype)
+                )
+
+                cell_size = 0
+                # For each layer, determine its memory requirement
+                for layer_id in range(self.model_config.num_hidden_layers):
+                    layer_size = self.model_config.get_layer_kv_cache_size(
+                        layer_id, self.model_config.context_len
+                    )
+
+                    # If layer_size is smaller than context_len, it's a reduced size
+                    if layer_size < self.model_config.context_len:
+                        layer_memory = (
+                            base_layer_size * layer_size / self.model_config.context_len
+                        )
+                    else:
+                        layer_memory = base_layer_size
+
+                    cell_size += layer_memory
+            else:
+                # For models without layer-specific patterns, use the full attn for all layers
+                cell_size = (
+                    self.model_config.get_num_kv_heads(get_attention_tp_size())
+                    * self.model_config.head_dim
+                    * self.model_config.num_hidden_layers
+                    * 2
+                    * torch._utils._element_size(self.kv_cache_dtype)
+                )
+
         rest_memory = available_gpu_memory - total_gpu_memory * (
             1 - self.mem_fraction_static
         )
@@ -818,6 +847,7 @@ class ModelRunner:
                 layer_num=self.model_config.num_hidden_layers,
                 device=self.device,
                 enable_memory_saver=self.server_args.enable_memory_saver,
+                model_config=self.model_config,
             )
         elif self.server_args.enable_double_sparsity:
             self.token_to_kv_pool = DoubleSparseTokenToKVPool(
@@ -830,6 +860,7 @@ class ModelRunner:
                 device=self.device,
                 heavy_channel_num=self.server_args.ds_heavy_channel_num,
                 enable_memory_saver=self.server_args.enable_memory_saver,
+                model_config=self.model_config,
             )
         else:
             self.token_to_kv_pool = MHATokenToKVPool(
@@ -841,6 +872,7 @@ class ModelRunner:
                 layer_num=self.model_config.num_hidden_layers,
                 device=self.device,
                 enable_memory_saver=self.server_args.enable_memory_saver,
+                model_config=self.model_config,
             )
 
         if self.token_to_kv_pool_allocator is None:
