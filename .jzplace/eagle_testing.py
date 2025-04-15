@@ -11,6 +11,7 @@ from pathlib import Path
 
 import matplotlib.pyplot as plt
 import numpy as np
+import requests
 
 # Get current environment and ensure PYTHONPATH is preserved
 ENV = os.environ.copy()
@@ -160,11 +161,69 @@ def run_benchmark(output_file, num_prompts, args):
         f"--output-file={output_file}",
         "--apply-chat-template",
         (
-            f'--extra-request-body={{"temperature": {args.temperature}}}'
+            f'--extra-request-body={{\"temperature\": {args.temperature}}}'
             if args.temperature is not None
             else ""
         ),
     ]
+
+    # Create a temporary file with the modified get_request function for Poisson distribution
+    if args.traffic_rate_option == "poisson":
+        poisson_script_path = Path(args.results_dir) / "poisson_request_patch.py"
+        with open(poisson_script_path, "w") as f:
+            f.write("""
+# Patch for get_request function to use Poisson distribution
+import asyncio
+import numpy as np
+from typing import AsyncGenerator, List, Tuple
+
+async def poisson_get_request(
+    input_requests: List[Tuple[str, int, int]],
+    request_rate: float,
+    cv: float = 1.0,
+) -> AsyncGenerator[Tuple[str, int, int], None]:
+    \"\"\"Generate requests with Poisson arrival times.
+    
+    Args:
+        input_requests: List of (prompt, prompt_len, output_len) tuples
+        request_rate: Average number of requests per second
+        cv: Coefficient of variation for controlling variability
+    \"\"\"
+    input_requests = iter(input_requests)
+    for request in input_requests:
+        yield request
+
+        if request_rate == float("inf"):
+            # If the request rate is infinity, then we don't need to wait.
+            continue
+
+        # Use gamma distribution to simulate Poisson arrivals with controlled variability
+        shape = 1 / (cv * cv)  # Shape parameter for gamma distribution
+        scale = cv * cv / request_rate  # Scale parameter for gamma distribution
+        
+        # Sample the request interval from the gamma distribution
+        interval = np.random.gamma(shape, scale)
+        
+        # The next request will be sent after the interval
+        await asyncio.sleep(interval)
+
+# Monkey patch the get_request function in bench_serving
+import sys
+import sglang.bench_serving
+sglang.bench_serving.get_request = poisson_get_request
+""")
+        
+        # Add the patch to PYTHONPATH
+        ENV["PYTHONPATH"] = str(poisson_script_path.parent) + ":" + ENV.get("PYTHONPATH", "")
+        
+        # Add the -m option to run the patch before bench_serving
+        cmd_base.insert(1, "-c")
+        cmd_base.insert(2, f"import sys; sys.path.insert(0, '{poisson_script_path.parent}'); import poisson_request_patch; from sglang.bench_serving import main; main()")
+        cmd_base.remove("sglang.bench_serving")
+        
+        # Add coefficient of variation parameter
+        cv = args.poisson_cv if hasattr(args, 'poisson_cv') and args.poisson_cv is not None else 1.0
+        ENV["POISSON_CV"] = str(cv)
 
     if args.traffic_rate_option == "qps":
         for request_rate in args.traffic_rate_list:
@@ -188,8 +247,19 @@ def run_benchmark(output_file, num_prompts, args):
             print(" ".join(cmd))
             subprocess.run(cmd, check=True, env=ENV)
             time.sleep(10)
+    elif args.traffic_rate_option == "poisson":
+        for request_rate in args.traffic_rate_list:
+            cmd = cmd_base + [
+                f"--num-prompts={max(100, int(num_prompts * min(1, request_rate/10)))}",
+                "--max-concurrency=256",
+                f"--request-rate={request_rate}",
+            ]
+            cmd = [x for x in cmd if x != ""]
+            print(" ".join(cmd))
+            subprocess.run(cmd, check=True, env=ENV)
+            time.sleep(10)
     else:
-        assert args.traffic_rate_option in ["qps", "concurrency"], "Invalid options"
+        assert args.traffic_rate_option in ["qps", "concurrency", "poisson"], "Invalid options"
 
 
 def plot_results(EXPERIMENTS, results_dir):
@@ -276,6 +346,52 @@ def plot_results(EXPERIMENTS, results_dir):
     plt.close()
 
 
+def plot_strategy_selection(exp, results_dir, args):
+    try:
+        from sglang.srt.speculative.eagle_mab import MABGroupManager
+        
+        # Try to access the MAB instance via HTTP
+        url = f"http://{args.host}:{args.port}/get_mab_stats"
+        try:
+            response = requests.get(url, timeout=5)
+            if response.status_code == 200:
+                print(f"MAB stats request successful: {response.json()}")
+            else:
+                print(f"Failed to get MAB stats: {response.status_code}")
+        except Exception as e:
+            print(f"Error requesting MAB stats: {e}")
+            
+        # As a fallback, try to directly trigger the plotting via the server process
+        # This is a more direct approach that doesn't rely on HTTP
+        try:
+            # Create a socket connection to the server
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                # Connect to the server on a special port (main port + 1000)
+                s.connect((args.host, args.port + 1000))
+                # Send the command to get MAB stats
+                s.sendall(b"GET_MAB_STATS\n")
+                # Receive the response
+                response = s.recv(1024)
+                print(f"Socket response: {response.decode('utf-8')}")
+        except Exception as e:
+            print(f"Socket communication failed: {e}")
+            
+            # As a last resort, create a direct plot file
+            plot_path = Path(results_dir) / f"{exp}_strategy_selection.png"
+            print(f"Creating placeholder plot at {plot_path}")
+            
+            # Create a simple placeholder plot
+            plt.figure(figsize=(10, 6))
+            plt.text(0.5, 0.5, "MAB Strategy Selection\n(Placeholder - Server Communication Failed)", 
+                    horizontalalignment='center', verticalalignment='center', fontsize=14)
+            plt.axis('off')
+            plt.savefig(plot_path)
+            plt.close()
+            
+    except ImportError as e:
+        print(f"Failed to import MAB module: {e}")
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--port", type=int, default=8080)
@@ -285,7 +401,7 @@ def main():
         "--traffic-rate-option",
         type=str,
         default="concurrency",
-        choices=["qps", "concurrency"],
+        choices=["qps", "concurrency", "poisson"],
     )
     parser.add_argument("--traffic-rate-list", type=str, default=None)
     parser.add_argument(
@@ -328,6 +444,13 @@ def main():
         help="The speculative draft model to use.",
     )
     parser.add_argument("--tp-size", type=int, default=1, help="Tensor Parallel Size")
+    parser.add_argument(
+        "--poisson-cv",
+        type=float,
+        default=None,
+        help="Coefficient of variation for Poisson distribution",
+    )
+    parser.add_argument("--host", type=str, default="localhost")
 
     args = parser.parse_args()
     print(args)
@@ -386,6 +509,10 @@ def main():
                     num_prompts=args.num_prompts,
                     args=args,
                 )
+                
+                # Plot MAB strategy selection if using MAB
+                if not exp.startswith("None") and len(exp.split(",")) > 2:
+                    plot_strategy_selection(exp, args.results_dir, args)
 
         except Exception as e:
             print(f"Error running experiment: {str(e)}")

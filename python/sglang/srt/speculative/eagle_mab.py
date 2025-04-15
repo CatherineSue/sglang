@@ -2,11 +2,14 @@
 
 import math
 import re
+import os
 from collections import deque
 from dataclasses import dataclass, field
 from typing import Deque, Dict, List, NamedTuple, Optional, Tuple
 
 import numpy as np
+import matplotlib.pyplot as plt
+from datetime import datetime
 
 
 class MABConfig:
@@ -242,6 +245,10 @@ class MABGroupManager:
         self.mabs: Dict[int, BaseMAB] = {}
         self._init_mabs()
         self.accept_lengths = {}
+        
+        # For strategy selection tracking and plotting
+        self.strategy_selections = {strategy: [] for strategy in strategies}
+        self.selection_steps = 0
 
     def _init_mabs(self):
         """Initialize MAB instances for each group.
@@ -292,14 +299,20 @@ class MABGroupManager:
         """
         # Fast path for single strategy
         if len(self.strategies) == 1:
-            return self.strategies[0]
+            selected_strategy = self.strategies[0]
+        else:
+            # Get appropriate group and valid strategies
+            group = self._get_group(batch_size)
+            valid_strategies = self._get_valid_strategies(batch_size)
 
-        # Get appropriate group and valid strategies
-        group = self._get_group(batch_size)
-        valid_strategies = self._get_valid_strategies(batch_size)
-
-        # Select strategy using the MAB algorithm
-        return self.mabs[group].select_strategy(valid_strategies)
+            # Select strategy using the MAB algorithm
+            selected_strategy = self.mabs[group].select_strategy(valid_strategies)
+        
+        # Track strategy selection for plotting
+        self.strategy_selections[selected_strategy].append(1)
+        self.selection_steps += 1
+            
+        return selected_strategy
 
     def record_strategy_metrics(
         self, batch_size: int, strategy: str, reward: float, accept_length: float
@@ -337,3 +350,60 @@ class MABGroupManager:
             )
 
         return self.accept_lengths.get(strategy, 0.0)
+        
+    def plot_strategy_selection(self, save_path=None):
+        """Plot the strategy selection history.
+        
+        This function visualizes which strategies were selected over time,
+        showing the distribution and frequency of strategy selections.
+        
+        Args:
+            save_path: Optional path to save the plot. If None, the plot will be 
+                      saved to the MAB_RESULTS_DIR environment variable directory
+                      or the current directory if the variable is not set.
+        """
+        if not any(self.strategy_selections.values()):
+            print("No strategy selection data available for plotting")
+            return
+            
+        plt.figure(figsize=(12, 6))
+        
+        # Create a dictionary to track cumulative selections for each strategy
+        cumulative_selections = {strategy: [] for strategy in self.strategies}
+        strategy_counts = {strategy: 0 for strategy in self.strategies}
+        steps = []
+        
+        # Build cumulative counts for each step
+        step = 0
+        for strategy in self.strategies:
+            for selection in self.strategy_selections[strategy]:
+                strategy_counts[strategy] += selection
+                cumulative_selections[strategy].append(strategy_counts[strategy])
+                step += 1
+                steps.append(step)
+        
+        # Plot cumulative selections for each strategy
+        for strategy in self.strategies:
+            if cumulative_selections[strategy]:  # Only plot if there's data
+                plt.plot(range(len(cumulative_selections[strategy])), 
+                         cumulative_selections[strategy], 
+                         label=f"Strategy {strategy}")
+        
+        plt.xlabel("Steps")
+        plt.ylabel("Cumulative Selections")
+        plt.title("MAB Strategy Selection Over Time")
+        plt.legend()
+        plt.grid(True)
+        
+        # Determine save path
+        if save_path is None:
+            results_dir = os.environ.get("MAB_RESULTS_DIR", ".")
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            save_path = os.path.join(results_dir, f"mab_strategy_selection_{timestamp}.png")
+        
+        # Save the plot
+        os.makedirs(os.path.dirname(save_path), exist_ok=True)
+        plt.savefig(save_path)
+        plt.close()
+        
+        print(f"Strategy selection plot saved to: {save_path}")

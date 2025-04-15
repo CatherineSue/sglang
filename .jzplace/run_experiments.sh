@@ -11,6 +11,37 @@ mkdir -p $results_dir
 port_start=8200
 
 gpu_index=0
+# Change traffic_rate_option to "poisson" to use Poisson distribution
+for traffic_rate_option in "poisson"; do
+    # Add coefficient of variation values to control the variability of request arrivals
+    for poisson_cv in 0.5 1.0 2.0; do
+        for temperature in 0 5; do
+            for sharegpt_context_len in 256 4096; do
+                port=$(($port_start + $gpu_index))
+
+                # Run the command and show the output both via command line and results to mab_results/testing_$traffic_rate_option\_$temperature.log
+                CUDA_VISIBLE_DEVICES=$gpu_index python3 .jzplace/eagle_testing.py \
+                    --traffic-rate-option="$traffic_rate_option" \
+                    --traffic-rate-list=1,4,16,64,256 \
+                    --sharegpt-context-len="$sharegpt_context_len" \
+                    --temperature="$temperature" \
+                    --port="$port" \
+                    --results-dir="$results_dir" \
+                    --model="$model" \
+                    --tp-size="$tp_size" \
+                    --speculative-draft="$speculative_draft" \
+                    --poisson-cv="$poisson_cv" \
+                > ${results_dir}/testing_${traffic_rate_option}_cv${poisson_cv}_temp${temperature}_ctx${sharegpt_context_len}.log 2>&1 &
+                gpu_index=$((gpu_index + 1))
+                
+                # Sleep to avoid starting all processes at once
+                sleep 2
+            done
+        done
+    done
+done
+
+# Optional: Also run the original concurrency tests for comparison
 for traffic_rate_option in "concurrency"; do
     for temperature in 0 5; do
         for sharegpt_context_len in 256 4096; do
@@ -27,8 +58,11 @@ for traffic_rate_option in "concurrency"; do
                 --model="$model" \
                 --tp-size="$tp_size" \
                 --speculative-draft="$speculative_draft" \
-            > ${results_dir}/testing_${traffic_rate_option}_${temperature}_${sharegpt_context_len}.log 2>&1 &
+            > ${results_dir}/testing_${traffic_rate_option}_temp${temperature}_ctx${sharegpt_context_len}.log 2>&1 &
             gpu_index=$((gpu_index + 1))
+            
+            # Sleep to avoid starting all processes at once
+            sleep 2
         done
     done
 done
