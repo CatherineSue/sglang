@@ -13,6 +13,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 """
 
+from sglang.srt.configs.model_config import ModelConfig
 from sglang.srt.torch_memory_saver_adapter import TorchMemorySaverAdapter
 
 """
@@ -212,7 +213,7 @@ class MHATokenToKVPool(KVCache):
         layer_num: int,
         device: str,
         enable_memory_saver: bool,
-        model_config=None,
+        model_config: Optional[ModelConfig] = None,
     ):
         self.size = size
         self.page_size = page_size
@@ -361,6 +362,21 @@ class MHATokenToKVPool(KVCache):
         v_scale: Optional[float] = None,
     ):
         layer_id = layer.layer_id
+        # Determine effective buffer size for this layer
+        layer_size = (
+            self.model_config.get_layer_kv_cache_size(layer_id, self.size)
+            if self.model_config
+            else self.size
+        )
+        # Map indices for local attention layers
+        if layer_size < self.size:
+            mapped_loc = loc % layer_size
+            cache_k = cache_k[-layer_size:]
+            cache_v = cache_v[-layer_size:]
+            mapped_loc = mapped_loc[-layer_size:]
+        else:
+            mapped_loc = loc
+
         if cache_k.dtype != self.dtype:
             if k_scale is not None:
                 cache_k.div_(k_scale)
@@ -373,17 +389,44 @@ class MHATokenToKVPool(KVCache):
             cache_k = cache_k.view(self.store_dtype)
             cache_v = cache_v.view(self.store_dtype)
 
+        # Ensure contiguity before writing to buffer
+        if not cache_k.is_contiguous():
+            cache_k = cache_k.contiguous()
+        if not cache_v.is_contiguous():
+            cache_v = cache_v.contiguous()
+
+        # Defensive checks for mapped_loc and cache_k/v
+        assert torch.all(mapped_loc >= 0), f"Negative index in mapped_loc: {mapped_loc}"
+        assert torch.all(
+            mapped_loc < layer_size
+        ), f"Index out of bounds: {mapped_loc} (layer_size={layer_size})"
+        assert (
+            cache_k.shape[0] == mapped_loc.shape[0]
+        ), f"cache_k batch mismatch: {cache_k.shape[0]} vs {mapped_loc.shape[0]}"
+        assert (
+            cache_v.shape[0] == mapped_loc.shape[0]
+        ), f"cache_v batch mismatch: {cache_v.shape[0]} vs {mapped_loc.shape[0]}"
+        print(
+            f"Writing to layer {layer_id}, mapped_loc={mapped_loc}, cache_k.shape={cache_k.shape}, cache_v.shape={cache_v.shape}, k_buffer.shape={self.k_buffer[layer_id].shape}, v_buffer.shape={self.v_buffer[layer_id].shape}"
+        )
+
+        num_unique = mapped_loc.unique().numel()
+        print(f"mapped_loc unique/total: {num_unique}/{mapped_loc.numel()}")
+        assert (
+            num_unique == mapped_loc.numel()
+        ), f"Duplicate indices detected in mapped_loc: {mapped_loc}"
+
         if self.capture_mode and cache_k.shape[0] < 4:
             # Overlap the copy of K and V cache for small batch size
             current_stream = self.device_module.current_stream()
             self.alt_stream.wait_stream(current_stream)
             with self.device_module.stream(self.alt_stream):
-                self.k_buffer[layer_id][loc] = cache_k
-            self.v_buffer[layer_id][loc] = cache_v
+                self.k_buffer[layer_id][mapped_loc] = cache_k
+            self.v_buffer[layer_id][mapped_loc] = cache_v
             current_stream.wait_stream(self.alt_stream)
         else:
-            self.k_buffer[layer_id][loc] = cache_k
-            self.v_buffer[layer_id][loc] = cache_v
+            self.k_buffer[layer_id][mapped_loc] = cache_k
+            self.v_buffer[layer_id][mapped_loc] = cache_v
 
 
 @torch.compile

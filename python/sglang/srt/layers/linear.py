@@ -171,6 +171,10 @@ class UnquantizedLinearMethod(LinearMethodBase):
         x: torch.Tensor,
         bias: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
+        # DEBUG: Before the linear layer call
+        assert (
+            x.shape[-1] == layer.weight.shape[1]
+        ), f"Shape mismatch: {x.shape} vs {layer.weight.shape}"
 
         return F.linear(x, layer.weight, bias)
 

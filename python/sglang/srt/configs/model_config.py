@@ -257,7 +257,7 @@ class ModelConfig:
         """Get the KV cache size for a specific layer."""
         # Llama 4: only layers at indices divisible by 4 need full attention
         if is_llama4_model(self.hf_config.architectures):
-            return min(default_size, 8192) if layer_id % 4 != 0 else default_size
+            return min(default_size, 8192) if (layer_id + 1) % 4 != 0 else default_size
 
         # For other models, use full attention for all layers
         return default_size
