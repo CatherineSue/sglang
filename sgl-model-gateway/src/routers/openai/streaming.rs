@@ -41,9 +41,9 @@ use crate::{
         responses::{ResponseToolType, ResponsesRequest},
     },
     routers::{
-        conversations::persist_conversation_items,
         header_utils::{apply_request_headers, preserve_response_headers},
         mcp_utils::{ensure_request_mcp_client, McpLoopConfig},
+        persistence_utils::persist_conversation_items,
     },
 };
 
